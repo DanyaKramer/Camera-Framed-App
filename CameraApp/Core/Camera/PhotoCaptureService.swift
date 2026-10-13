@@ -8,9 +8,12 @@ struct CapturedPhoto: Identifiable {
     /// Mutable: the post-capture pipeline replaces it with the processed image.
     var image: UIImage
     let rawData: Data?
-    let settings: ExposureParams
-    let resolvedDuration: Double
-    let resolvedISO: Float
+    /// What we asked the capture device for. `nil` in auto mode.
+    let requestedExposure: ExposureParams?
+    /// What the hardware actually used, reported by `AVCaptureResolvedPhotoSettings`.
+    /// With `.quality` prioritisation the system is free to override the request,
+    /// which is exactly why this is read back rather than assumed.
+    let actualExposure: ExposureParams
     let metadata: [String: Any]
     let depthData: AVDepthData?
     var aspect: AspectRatio
@@ -28,13 +31,35 @@ enum PhotoOutputError: LocalizedError {
     }
 }
 
-/// Wraps `AVCapturePhotoOutput` with the manual-exposure path the UI needs.
+/// Per-request state, shared between the service and the capture delegate.
 ///
-/// The critical detail: device-level `setExposureModeCustom` only drives the
-/// *preview*. The still is captured through `AVCapturePhotoSettings`, so the exact
-/// (duration, ISO) pair is pushed there too, and the values the hardware actually
-/// resolved are read back from `AVCaptureResolvedPhotoSettings` — with
-/// `.quality` prioritization the system may override what was requested.
+/// `AVCapturePhotoSettings` has no per-photo exposure API — the only way to pin
+/// (duration, ISO) for a still is to put the capture device in custom exposure
+/// mode beforehand. What the hardware *actually* used is only knowable after the
+/// fact, from `AVCaptureResolvedPhotoSettings`, which is matched to this request
+/// by `uniqueID`.
+final class CaptureRequest {
+    let wantsRAW: Bool
+    let aspect: AspectRatio
+    let requestedExposure: ExposureParams?
+    private(set) var resolvedExposure: ExposureParams?
+
+    init(wantsRAW: Bool, aspect: AspectRatio, requestedExposure: ExposureParams?) {
+        self.wantsRAW = wantsRAW
+        self.aspect = aspect
+        self.requestedExposure = requestedExposure
+    }
+
+    func record(resolved: AVCaptureResolvedPhotoSettings) {
+        guard resolvedExposure == nil else { return }
+        resolvedExposure = ExposureParams(
+            duration: resolved.exposureDuration.seconds,
+            iso: resolved.iso
+        )
+    }
+}
+
+/// Wraps `AVCapturePhotoOutput`.
 @MainActor
 final class PhotoCaptureService: NSObject {
     private let session: CameraSessionController
@@ -48,29 +73,40 @@ final class PhotoCaptureService: NSObject {
         super.init()
     }
 
-    var supportsDepth: Bool { !output.availableDepthDataFormats.isEmpty }
-
     func capture(
         exposure: ExposureParams?,
         wantsRAW: Bool,
         aspect: AspectRatio
     ) async throws -> CapturedPhoto {
-        guard let settings = makeSettings(exposure: exposure, wantsRAW: wantsRAW) else {
+        // Depth delivery is opt-in per attempt; if the device or format cannot
+        // provide it, capturePhoto raises, so fall back to a plain still rather
+        // than crashing the app.
+        do {
+            return try await perform(exposure: exposure, wantsRAW: wantsRAW, aspect: aspect, depth: true)
+        } catch {
+            return try await perform(exposure: exposure, wantsRAW: wantsRAW, aspect: aspect, depth: false)
+        }
+    }
+
+    private func perform(
+        exposure: ExposureParams?,
+        wantsRAW: Bool,
+        aspect: AspectRatio,
+        depth: Bool
+    ) async throws -> CapturedPhoto {
+        let request = CaptureRequest(wantsRAW: wantsRAW, aspect: aspect, requestedExposure: exposure)
+        let settings = makeSettings(wantsRAW: wantsRAW, depth: depth)
+        guard let settings else {
             throw PhotoOutputError.settingsUnavailable
         }
 
         return try await withCheckedThrowingContinuation { cont in
-            let proxy = CaptureContinuationBox(
-                continuation: cont,
-                service: self,
-                wantsRAW: wantsRAW,
-                aspect: aspect
-            )
+            let proxy = CaptureContinuationBox(continuation: cont, service: self, request: request)
             output.capturePhoto(with: settings, delegate: proxy)
         }
     }
 
-    private func makeSettings(exposure: ExposureParams?, wantsRAW: Bool) -> AVCapturePhotoSettings? {
+    private func makeSettings(wantsRAW: Bool, depth: Bool) -> AVCapturePhotoSettings? {
         let settings: AVCapturePhotoSettings
         if wantsRAW, let rawType = output.availableRawPhotoPixelFormatTypes.first {
             settings = AVCapturePhotoSettings(rawPixelFormatType: rawType)
@@ -87,23 +123,11 @@ final class PhotoCaptureService: NSObject {
             ]
         }
 
-        if supportsDepth {
+        if depth {
             settings.isDepthDataDeliveryEnabled = true
         }
 
-        // Push the exact exposure into the still capture itself.
-        if let exposure, exposure.duration > 0, exposure.iso > 0 {
-            let time = CMTime(seconds: exposure.duration, preferredTimescale: 1_000_000_000)
-            settings.setCustomPhotoExposureMode(duration: time, iso: exposure.iso) { _, _ in
-                // The values actually used arrive via AVCaptureResolvedPhotoSettings.
-            }
-        }
-
         return settings
-    }
-
-    fileprivate func fail(_ error: Error) {
-        onCaptureFinished?(.failure(error))
     }
 
     fileprivate func report(progress: Double) {
@@ -111,25 +135,22 @@ final class PhotoCaptureService: NSObject {
     }
 }
 
-/// `AVCapturePhotoOutput.capturePhoto` needs a long-lived delegate; this box keeps
-/// the continuation alive for exactly one capture.
+/// `capturePhoto(with:delegate:)` needs a long-lived delegate; this box keeps the
+/// continuation alive for exactly one capture and resumes it once.
 private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDelegate {
     private var continuation: CheckedContinuation<CapturedPhoto, Error>?
     private weak var service: PhotoCaptureService?
-    private var wantsRAW = false
-    private var aspect: AspectRatio = .landscape4x3
+    private let request: CaptureRequest
     private var finished = false
 
     init(
         continuation: CheckedContinuation<CapturedPhoto, Error>,
         service: PhotoCaptureService,
-        wantsRAW: Bool,
-        aspect: AspectRatio
+        request: CaptureRequest
     ) {
         self.continuation = continuation
         self.service = service
-        self.wantsRAW = wantsRAW
-        self.aspect = aspect
+        self.request = request
         super.init()
     }
 
@@ -148,33 +169,33 @@ private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDeleg
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let error {
-                self.service?.fail(CameraError.captureFailed(error.localizedDescription))
-                self.resolve(.failure(error))
+                let wrapped = CameraError.captureFailed(error.localizedDescription)
+                self.service?.onCaptureFinished?(.failure(wrapped))
+                self.resolve(.failure(wrapped))
                 return
             }
 
             guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
                 let error = PhotoOutputError.noPhotoData
-                self.service?.fail(error)
+                self.service?.onCaptureFinished?(.failure(error))
                 self.resolve(.failure(error))
                 return
             }
 
-            let resolved = photo.resolvedPhotoSettings
-            let exposure = ExposureParams(
-                duration: resolved.exposureDuration.seconds,
-                iso: resolved.iso
-            )
+            // Fall back to what was requested if the resolved settings never
+            // arrived (they are delivered by didFinishCaptureFor).
+            let actual = self.request.resolvedExposure
+                ?? self.request.requestedExposure
+                ?? ExposureParams(duration: 1.0 / 120, iso: 200)
 
             let captured = CapturedPhoto(
                 image: image,
-                rawData: self.wantsRAW ? data : nil,
-                settings: exposure,
-                resolvedDuration: resolved.exposureDuration.seconds,
-                resolvedISO: resolved.iso,
+                rawData: self.request.wantsRAW ? data : nil,
+                requestedExposure: self.request.requestedExposure,
+                actualExposure: actual,
                 metadata: photo.metadata,
                 depthData: photo.depthData,
-                aspect: self.aspect
+                aspect: self.request.aspect
             )
 
             self.service?.onCaptureFinished?(.success(captured))
@@ -184,21 +205,23 @@ private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDeleg
 
     func photoOutput(
         _ output: AVCapturePhotoOutput,
-        didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
-        error: Error?
+        willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+        proposedCaptureTimestamp: CMTime
     ) {
+        request.record(resolved: resolvedSettings)
         Task { @MainActor [weak self] in
-            self?.service?.report(progress: 1.0)
+            self?.service?.report(progress: 0.15)
         }
     }
 
     func photoOutput(
         _ output: AVCapturePhotoOutput,
-        willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings,
-        proposedCaptureTimestamp: CMTime
+        didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+        error: Error?
     ) {
+        request.record(resolved: resolvedSettings)
         Task { @MainActor [weak self] in
-            self?.service?.report(progress: 0.15)
+            self?.service?.report(progress: 1.0)
         }
     }
 }

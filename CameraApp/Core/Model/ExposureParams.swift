@@ -67,13 +67,18 @@ final class ExposureClamper {
             minDuration: CMTimeGetSeconds(format.minExposureDuration),
             maxDuration: CMTimeGetSeconds(format.maxExposureDuration),
             minISO: format.minISO,
-            maxISO: format.supportedISOHigh,
+            // `AVCaptureDevice.Format` exposes the ceiling as `maxISO`.
+            maxISO: format.maxISO,
             maxFrameRate: maxRate
         )
     }
 
     /// Analytic clamp. Does not guarantee hardware acceptance — see `ExposureVerifier`.
-    static func clamp(duration: Double, iso: Float, limits: Limits) -> ExposureParams {
+    ///
+    /// Named `clamped` rather than `clamp`: inside this type an unqualified
+    /// `clamp(_:_:_:)` would resolve back to this static method instead of the
+    /// free generic function in Geometry.swift.
+    static func clamped(duration: Double, iso: Float, limits: Limits) -> ExposureParams {
         let t = clamp(duration, limits.minDuration, limits.maxDuration)
         var i = clamp(iso, limits.minISO, limits.maxISO)
 
@@ -121,7 +126,7 @@ final class ExposureVerifier: @unchecked Sendable {
         to device: AVCaptureDevice,
         limits: ExposureClamper.Limits
     ) async -> ExposureParams? {
-        let requested = ExposureClamper.clamp(duration: duration, iso: iso, limits: limits)
+        let requested = ExposureClamper.clamped(duration: duration, iso: iso, limits: limits)
 
         lock.lock()
         let cached = memo[Self.key(requested)]

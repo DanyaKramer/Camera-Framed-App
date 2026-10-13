@@ -20,9 +20,8 @@ final class DepthOfFieldRenderer {
 
     /// Distance-aware blur.
     func render(image: CIImage, depthData: AVDepthData, blurRadius: Double) -> CIImage {
-        guard let depthMap = depthData.depthDataMap else {
-            return renderFallback(image: image, blurRadius: blurRadius)
-        }
+        // `depthDataMap` is non-optional on iOS 17.
+        let depthMap = depthData.depthDataMap
         return depthAwareBlur(image: image, depthBuffer: depthMap, blurRadius: blurRadius)
     }
 
@@ -35,7 +34,7 @@ final class DepthOfFieldRenderer {
         let filter = CIFilter(name: "CIMaskedVariableBlur")
         filter?.setValue(image, forKey: kCIInputImageKey)
         filter?.setValue(blurred, forKey: "InputBackgroundImage")
-        filter?.setValue(mask, forKey: kCIInputMaskImage)
+        filter?.setValue(mask, forKey: kCIInputMaskImageKey)
         filter?.setValue(max(blurRadius * 2.2, 2), forKey: kCIInputRadiusKey)
         return filter?.outputImage ?? image
     }
