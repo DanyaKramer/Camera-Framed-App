@@ -619,13 +619,15 @@ final class CameraController {
         }
 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            // A second trailing closure needs its argument label and a colon —
+            // Swift only treats the *first* as an unlabelled trailing closure.
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 if let data = photo.image.jpegData(compressionQuality: 0.96) {
                     // `options:` has no default value in Swift, pass nil explicitly.
                     request.addResource(with: .photo, data: data, options: nil)
                 }
-            }; completionHandler { _, _ in
+            } completionHandler: { _, _ in
                 cont.resume()
             }
         }

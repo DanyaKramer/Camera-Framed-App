@@ -35,14 +35,15 @@ enum PhotoOutputError: LocalizedError {
 ///
 /// `AVCapturePhotoSettings` has no per-photo exposure API — the only way to pin
 /// (duration, ISO) for a still is to put the capture device in custom exposure
-/// mode beforehand. What the hardware *actually* used is only knowable after the
-/// fact, from `AVCaptureResolvedPhotoSettings`, which is matched to this request
-/// by `uniqueID`.
+/// mode beforehand. `AVCaptureResolvedPhotoSettings` reports which *features*
+/// were enabled (depth, HDR, live photo); it does NOT report exposure. The
+/// values the hardware actually used are only observable on the device itself,
+/// so they are read back after the capture settles.
 final class CaptureRequest {
     let wantsRAW: Bool
     let aspect: AspectRatio
     let requestedExposure: ExposureParams?
-    private(set) var resolvedExposure: ExposureParams?
+    private(set) var actualExposure: ExposureParams?
 
     init(wantsRAW: Bool, aspect: AspectRatio, requestedExposure: ExposureParams?) {
         self.wantsRAW = wantsRAW
@@ -50,12 +51,9 @@ final class CaptureRequest {
         self.requestedExposure = requestedExposure
     }
 
-    func record(resolved: AVCaptureResolvedPhotoSettings) {
-        guard resolvedExposure == nil else { return }
-        resolvedExposure = ExposureParams(
-            duration: resolved.exposureDuration.seconds,
-            iso: resolved.iso
-        )
+    func record(actual: ExposureParams?) {
+        guard actualExposure == nil else { return }
+        actualExposure = actual
     }
 }
 
@@ -133,6 +131,17 @@ final class PhotoCaptureService: NSObject {
     fileprivate func report(progress: Double) {
         onProgress?(progress)
     }
+
+    /// Reads the exposure the camera is actually running right now.
+    ///
+    /// This is the only trustworthy source: `AVCaptureResolvedPhotoSettings`
+    /// describes feature resolution, not shutter/ISO, and with `.quality`
+    /// prioritisation the system may override what we asked for.
+    func readDeviceExposure() async -> ExposureParams? {
+        guard let device = await session.withDevice({ $0 }) else { return nil }
+        let params = ExposureParams(device: device)
+        return params.duration > 0 ? params : nil
+    }
 }
 
 /// `capturePhoto(with:delegate:)` needs a long-lived delegate; this box keeps the
@@ -182,10 +191,12 @@ private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDeleg
                 return
             }
 
-            // Fall back to what was requested if the resolved settings never
-            // arrived (they are delivered by didFinishCaptureFor).
-            let actual = self.request.resolvedExposure
-                ?? self.request.requestedExposure
+            // By now the capture has settled, so the device holds the values that were
+            // really used. Prefer the device, then the request, then a neutral default.
+            request.record(actual: await self.service?.readDeviceExposure())
+
+            let actual = request.actualExposure
+                ?? request.requestedExposure
                 ?? ExposureParams(duration: 1.0 / 120, iso: 200)
 
             let captured = CapturedPhoto(
@@ -208,7 +219,6 @@ private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDeleg
         willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings,
         proposedCaptureTimestamp: CMTime
     ) {
-        request.record(resolved: resolvedSettings)
         Task { @MainActor [weak self] in
             self?.service?.report(progress: 0.15)
         }
@@ -219,7 +229,6 @@ private final class CaptureContinuationBox: NSObject, AVCapturePhotoCaptureDeleg
         didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
         error: Error?
     ) {
-        request.record(resolved: resolvedSettings)
         Task { @MainActor [weak self] in
             self?.service?.report(progress: 1.0)
         }
