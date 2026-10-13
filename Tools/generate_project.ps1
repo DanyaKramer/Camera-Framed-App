@@ -86,13 +86,17 @@ foreach ($e in $entries) {
 
     [void]$groupIds.Add($groupId)
 
+    # The file reference path must be the path RELATIVE TO THE GROUP ROOT
+    # (i.e. "App/CameraApp.swift"), not just the leaf name. Using only the leaf
+    # makes Xcode look for CameraApp/CameraApp.swift and mark every file as a
+    # "recovered reference".
     if ($e.Kind -eq 'swift') {
-        [void]$fileRefLines.Add(($T + $fileId + ' /* ' + $name + ' */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ' + $Q + $name + $Q + '; sourceTree = ' + $Q + '<group>' + $Q + '; };'))
-        [void]$buildFileLines.Add(($T + $buildId + ' /* ' + $name + ' in Sources */ = {isa = PBXBuildFile; fileRef = ' + $fileId + ' /* ' + $name + ' */; };'))
+        [void]$fileRefLines.Add(($T + $fileId + ' /* ' + $e.Rel + ' */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ' + $Q + $e.Rel + $Q + '; sourceTree = ' + $Q + '<group>' + $Q + '; };'))
+        [void]$buildFileLines.Add(($T + $buildId + ' /* ' + $name + ' in Sources */ = {isa = PBXBuildFile; fileRef = ' + $fileId + ' /* ' + $e.Rel + ' */; };'))
         [void]$sourcesLines.Add(($T + $T + $buildId + ' /* ' + $name + ' in Sources */,'))
     } else {
-        [void]$fileRefLines.Add(($T + $fileId + ' /* ' + $name + ' */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = ' + $Q + $name + $Q + '; sourceTree = ' + $Q + '<group>' + $Q + '; };'))
-        [void]$buildFileLines.Add(($T + $buildId + ' /* ' + $name + ' in Resources */ = {isa = PBXBuildFile; fileRef = ' + $fileId + ' /* ' + $name + ' */; };'))
+        [void]$fileRefLines.Add(($T + $fileId + ' /* ' + $e.Rel + ' */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = ' + $Q + $e.Rel + $Q + '; sourceTree = ' + $Q + '<group>' + $Q + '; };'))
+        [void]$buildFileLines.Add(($T + $buildId + ' /* ' + $name + ' in Resources */ = {isa = PBXBuildFile; fileRef = ' + $fileId + ' /* ' + $e.Rel + ' */; };'))
         [void]$resourcesLines.Add(($T + $T + $buildId + ' /* ' + $name + ' in Resources */,'))
     }
 
@@ -369,7 +373,24 @@ $content = ($out -join "`n") + "`n"
 $path = Join-Path $projectDir 'project.pbxproj'
 [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 
+# Verify every generated file reference resolves to a file that actually exists.
+# A wrong `path` makes Xcode silently show "recovered reference" and fail the
+# build with "Build input file cannot be found" — expensive to debug from the
+# far side, trivial to catch here.
+$missing = @()
+foreach ($e in $entries) {
+    $full = Join-Path $sourceRoot ($e.Rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path $full)) { $missing += $e.Rel }
+}
+if ($missing.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'ERROR: these file references do not exist on disk:' -ForegroundColor Red
+    foreach ($m in $missing) { Write-Host ("  " + $m) -ForegroundColor Red }
+    throw 'Project file would contain broken references.'
+}
+
 Write-Host ''
 Write-Host ("Wrote {0}" -f $path)
 Write-Host ('  objectVersion 56 - opens in Xcode 14, 15, 16 and 26')
 Write-Host ('  {0} sources, {1} asset catalogs' -f $swiftFiles.Count, $assetDirs.Count)
+Write-Host ('  verified: all {0} file references resolve on disk' -f $entries.Count)

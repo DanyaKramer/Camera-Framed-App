@@ -28,16 +28,24 @@ jobs:
           xcodebuild -version
           swift --version
 
-      # The checked-in project file is generated. If it drifts out of sync with the
-      # source tree, later builds silently miss files — so verify it.
-      - name: Verify project file is in sync with sources
-        if: runner.os == 'macOS'
-        continue-on-error: true
+      # The checked-in project file is generated. A stale or wrong file reference
+      # makes Xcode show every file as "recovered reference" and the build fail
+      # with "Build input file cannot be found" — expensive to diagnose remotely,
+      # so it is worth catching here. The generator also verifies that every path
+      # it emits resolves on disk, and throws if not.
+      - name: Verify project file matches sources
         run: |
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "pwsh not available on this runner — skipping project check."
+            exit 0
+          fi
           pwsh -File Tools/generate_project.ps1
           if ! git diff --quiet -- CameraApp.xcodeproj/project.pbxproj; then
-            echo "::warning::project.pbxproj is out of sync. Run Tools/generate_project.ps1 and commit the result."
+            echo "::error::project.pbxproj is out of sync with the source tree. Run Tools/generate_project.ps1 and commit the result."
+            git --no-pager diff -- CameraApp.xcodeproj/project.pbxproj | head -60
+            exit 1
           fi
+          echo "project.pbxproj is in sync."
 
       - name: Compile (unsigned, generic iOS device)
         run: |
