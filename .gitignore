@@ -9,6 +9,9 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
+# Tooling downloaded by Tools/bootstrap.sh
+.tools/
+
 # Xcode user state
 xcuserdata/
 *.xcuserstate

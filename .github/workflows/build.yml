@@ -28,11 +28,11 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: ./Tools/bootstrap.sh
+        env:
+          # CI does not need the project opened; keep the script non-interactive.
+          XCODEGEN_SKIP_OPEN: "1"
 
       - name: Compile (unsigned, generic iOS device)
         run: |
