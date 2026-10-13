@@ -1,6 +1,7 @@
 import SwiftUI
 
 @main
+@MainActor
 struct CameraApp: App {
     @State private var controller = CameraController()
 

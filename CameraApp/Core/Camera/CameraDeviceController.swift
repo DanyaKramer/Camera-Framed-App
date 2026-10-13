@@ -113,8 +113,10 @@ final class CameraDeviceController {
         Task { [weak self] in
             guard let self else { return }
             await session.withDevice { device -> Void in
+                // There is no `setContinuousAutoExposure()` method; continuous
+                // exposure is reached by assigning the mode property.
                 if device.isExposureModeSupported(.continuousAutoExposure) {
-                    device.setContinuousAutoExposure()
+                    device.exposureMode = .continuousAutoExposure
                 }
             }
             if let device = await session.withDevice({ $0 }) {

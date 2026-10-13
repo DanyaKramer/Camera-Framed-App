@@ -128,6 +128,7 @@ struct AspectMenu: View {
 
 // MARK: - Overflow menu (top right)
 
+@MainActor
 struct OverflowMenu: View {
     let controller: CameraController
     let onOpenSettings: () -> Void
@@ -203,6 +204,7 @@ struct OverflowMenu: View {
 
 // MARK: - Top bar
 
+@MainActor
 struct TopBar: View {
     let controller: CameraController
     let onOpenSettings: () -> Void

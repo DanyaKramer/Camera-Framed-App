@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SettingsView: View {
     @Environment(CameraController.self) private var controller
     @Environment(\.dismiss) private var dismiss

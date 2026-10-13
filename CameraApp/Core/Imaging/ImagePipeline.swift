@@ -6,7 +6,9 @@ import UIKit
 /// Post-capture pipeline: aspect crop → optional depth-of-field → orientation.
 final class ImagePipeline {
     private let context = CIContext(options: [.useSoftwareRenderer: false])
-    private let dof = DepthOfFieldRenderer(context: context)
+    /// Lazy: property initialisers run before `self` exists, so the renderer cannot
+    /// be built from `context` at initialisation time.
+    private lazy var dof = DepthOfFieldRenderer(context: context)
 
     func process(
         _ captured: CapturedPhoto,

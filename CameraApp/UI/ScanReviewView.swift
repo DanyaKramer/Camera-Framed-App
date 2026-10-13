@@ -114,6 +114,7 @@ struct ScanReviewView: View {
 }
 
 /// Saved framings, reusable for a series of shots.
+@MainActor
 struct RecipeGalleryView: View {
     let controller: CameraController
     @Environment(\.dismiss) private var dismiss

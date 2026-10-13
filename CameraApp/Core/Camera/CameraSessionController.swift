@@ -43,7 +43,7 @@ final class CameraSessionController: NSObject, @unchecked Sendable {
             sessionQueue.async { [self] in
                 do {
                     let device = try Self.build(position: desiredPosition)
-                    try Self.attach(device: device, to: session)
+                    try attach(device: device, to: session)
                     self.videoDevice = device
                     self.position = desiredPosition
                     self.isMirrored = desiredPosition == .front
@@ -96,14 +96,19 @@ final class CameraSessionController: NSObject, @unchecked Sendable {
         }
     }
 
-    private static func attach(device: AVCaptureDevice, to session: AVCaptureSession) throws {
+    /// Builds the capture graph. An instance method, not a static one: it wires
+    /// up this controller's own `photoOutput`, `videoOutput` and `frameStreamer`.
+    private func attach(device: AVCaptureDevice, to session: AVCaptureSession) throws {
         session.beginConfiguration()
 
         session.sessionPreset = .photo
 
-        // Replace any existing video input.
-        for input in session.inputs where input.mediaType == .video {
-            session.removeInput(input)
+        // Replace any existing video input. `mediaType` lives on
+        // AVCaptureDeviceInput, not on the AVCaptureInput base class.
+        for input in session.inputs {
+            if let deviceInput = input as? AVCaptureDeviceInput, deviceInput.mediaType == .video {
+                session.removeInput(input)
+            }
         }
 
         let input = try AVCaptureDeviceInput(device: device)
@@ -178,7 +183,7 @@ final class CameraSessionController: NSObject, @unchecked Sendable {
                     return
                 }
                 var result: T?
-                device.lockForConfiguration()
+                try? device.lockForConfiguration()
                 result = body(device)
                 device.unlockForConfiguration()
                 cont.resume(returning: result)
@@ -196,7 +201,7 @@ final class CameraSessionController: NSObject, @unchecked Sendable {
                     return
                 }
                 holder.device = device
-                device.lockForConfiguration()
+                try? device.lockForConfiguration()
                 cont.resume(returning: ())
             }
         }

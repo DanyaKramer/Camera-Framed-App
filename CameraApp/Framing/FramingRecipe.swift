@@ -220,7 +220,10 @@ struct LiveMatcher {
 
         // --- Position -------------------------------------------------------
         let livePoint = live.subject.centroid ?? liveCrop.center
-        let targetPoint = target.subjectBounds.map { targetCrop.center } ?? targetCrop.center
+        // The target point is the centre of the crop we want to land on; the
+        // subject bbox recorded at scan time lives in a different coordinate
+        // space and cannot be compared directly here.
+        let targetPoint = targetCrop.center
         let dx = Double(targetPoint.x - livePoint.x)
         let dy = Double(targetPoint.y - livePoint.y)
         let normalizedDx = dx / max(liveCrop.width, 1e-3)

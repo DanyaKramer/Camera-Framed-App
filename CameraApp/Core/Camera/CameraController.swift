@@ -622,7 +622,8 @@ final class CameraController {
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 if let data = photo.image.jpegData(compressionQuality: 0.96) {
-                    request.addResource(with: .photo, data: data)
+                    // `options:` has no default value in Swift, pass nil explicitly.
+                    request.addResource(with: .photo, data: data, options: nil)
                 }
             } completionHandler { _, _ in
                 cont.resume()
@@ -676,7 +677,9 @@ final class CameraController {
             width: rect.width * CGFloat(width),
             height: rect.height * CGFloat(height)
         )
-        guard let ciImage = CIImage(cvPixelBuffer: buffer) else { return nil }
+        // `CIImage(cvPixelBuffer:)` is failable only in older SDKs; on iOS 17 it
+// returns a non-optional value.
+        let ciImage = CIImage(cvPixelBuffer: buffer)
         let cropped = ciImage.cropped(to: cgRect)
         let context = CIContext(options: nil)
         guard let cgImage = context.createCGImage(cropped, from: cropped.extent) else { return nil }

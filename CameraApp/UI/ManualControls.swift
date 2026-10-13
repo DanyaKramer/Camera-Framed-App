@@ -96,6 +96,7 @@ struct HistogramView: View {
 }
 
 /// Manual mode: three faders + the exposure triangle readout.
+@MainActor
 struct ManualControlsPanel: View {
     let controller: CameraController
 
@@ -181,6 +182,7 @@ struct ManualControlsPanel: View {
 }
 
 /// Read-only strip explaining what the hardware is actually doing.
+@MainActor
 struct ExposureReadout: View {
     let controller: CameraController
 

@@ -1,6 +1,10 @@
 import SwiftUI
 import UIKit
 
+// `@MainActor` on the whole struct, not just `body`: SwiftUI's `View` conformance
+// only infers main-actor isolation for the protocol witnesses, so helper computed
+// properties would otherwise reach the main-actor model from a nonisolated context.
+@MainActor
 struct CameraScreen: View {
     @Environment(CameraController.self) private var controller
 
