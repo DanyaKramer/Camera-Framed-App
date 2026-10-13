@@ -14,7 +14,7 @@
 # Homebrew ships no prebuilt bottle for macOS 13 (Ventura), so it falls back to
 # compiling from source, which needs Xcode 15.3, which needs macOS 14. Instead we
 # download the official prebuilt release binary into ./.tools — no compiler, no
-# Homebrew, works on Ventura and anything newer.
+# Homebrew, no sudo.
 
 set -euo pipefail
 
@@ -23,62 +23,90 @@ cd "$(dirname "$0")/.."
 # 2.42.0 is the last release built against the Xcode 15 toolchain, which is the
 # newest line that runs on macOS 13. Override with XCODEGEN_VERSION if needed.
 XCODEGEN_VERSION="${XCODEGEN_VERSION:-2.42.0}"
-LOCAL_BIN="$PWD/.tools/bin/xcodegen"
+TOOLS_DIR="$PWD/.tools"
+BIN_DIR="$TOOLS_DIR/bin"
+SHARE_DIR="$TOOLS_DIR/share"
 
-resolve_xcodegen() {
-  # Already usable?
-  if command -v xcodegen >/dev/null 2>&1 && xcodegen --version >/dev/null 2>&1; then
-    echo "Using system XcodeGen: $(xcodegen --version 2>&1 | head -1)"
-    return 0
-  fi
+xcodegen_works() {
+  "$@" --version >/dev/null 2>&1
+}
 
-  # Previously downloaded by this script?
-  if [ -x "$LOCAL_BIN" ] && "$LOCAL_BIN" --version >/dev/null 2>&1; then
-    echo "Using local XcodeGen: $("$LOCAL_BIN" --version 2>&1 | head -1)"
-    export PATH="$PWD/.tools/bin:$PATH"
-    return 0
-  fi
+install_from_release() {
+  local version="$1"
+  local tmp root binary
 
-  echo "Downloading XcodeGen $XCODEGEN_VERSION (prebuilt, no compiler needed)..."
-  local tmp
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  root="$tmp/xcodegen"
 
+  echo "Downloading XcodeGen $version (prebuilt, no compiler needed)..."
   if ! curl -fsSL -o "$tmp/xcodegen.zip" \
-      "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"; then
-    echo "Failed to download XcodeGen $XCODEGEN_VERSION." >&2
+      "https://github.com/yonaskolb/XcodeGen/releases/download/${version}/xcodegen.zip"; then
+    rm -rf "$tmp"
+    echo "Failed to download XcodeGen $version." >&2
     return 1
   fi
 
-  unzip -oq "$tmp/xcodegen.zip" -d "$tmp" || {
-    echo "Failed to unpack xcodegen.zip" >&2
-    return 1
-  }
+  # unzip is standard on macOS; ditto is the native fallback.
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -oq "$tmp/xcodegen.zip" -d "$tmp" || { rm -rf "$tmp"; echo "Failed to unpack the archive." >&2; return 1; }
+  else
+    ditto -x -k "$tmp/xcodegen.zip" "$tmp" || { rm -rf "$tmp"; echo "Failed to unpack the archive." >&2; return 1; }
+  fi
 
-  if [ ! -f "$tmp/bin/xcodegen" ]; then
-    echo "xcodegen binary not found inside the archive" >&2
+  # The archive has a top-level `xcodegen/` directory holding bin/ and share/.
+  # Locate the binary by path rather than by name alone: the archive also
+  # contains install.sh, and `find -perm` syntax differs between BSD and GNU.
+  binary="$(find "$tmp" -type f -path '*/bin/xcodegen' 2>/dev/null | head -1)"
+  if [ -z "$binary" ]; then
+    binary="$(find "$tmp" -type f -name xcodegen 2>/dev/null | head -1)"
+  fi
+  if [ -z "$binary" ]; then
+    echo "Could not find the xcodegen binary inside the archive." >&2
+    rm -rf "$tmp"
     return 1
   fi
 
-  mkdir -p "$PWD/.tools/bin"
-  cp "$tmp/bin/xcodegen" "$LOCAL_BIN"
-  chmod +x "$LOCAL_BIN"
+  mkdir -p "$BIN_DIR"
+  cp "$binary" "$BIN_DIR/xcodegen"
+  chmod +x "$BIN_DIR/xcodegen"
 
-  if ! "$LOCAL_BIN" --version >/dev/null 2>&1; then
-    echo "The downloaded XcodeGen will not run on this macOS version." >&2
+  # XcodeGen reads default build settings from share/xcodegen/SettingPresets and
+  # resolves them relative to its own location. Copying only the binary gives a
+  # "missing setting preset" failure, so the share/ tree must sit next to bin/.
+  if [ -d "$root/share" ]; then
+    rm -rf "$SHARE_DIR"
+    cp -R "$root/share" "$SHARE_DIR"
+  fi
+
+  rm -rf "$tmp"
+
+  if ! xcodegen_works "$BIN_DIR/xcodegen"; then
+    echo "The downloaded XcodeGen will not run on this macOS." >&2
     echo "Try an older build:  XCODEGEN_VERSION=2.38.0 ./Tools/bootstrap.sh" >&2
     return 1
   fi
-
-  export PATH="$PWD/.tools/bin:$PATH"
-  echo "Installed XcodeGen: $("$LOCAL_BIN" --version 2>&1 | head -1)"
 }
 
-resolve_xcodegen
+# --- resolve a working xcodegen ---------------------------------------------
+if command -v xcodegen >/dev/null 2>&1 && xcodegen --version >/dev/null 2>&1; then
+  echo "Using system XcodeGen: $(xcodegen --version 2>&1 | head -1)"
+elif [ -x "$BIN_DIR/xcodegen" ] && xcodegen_works "$BIN_DIR/xcodegen"; then
+  echo "Using local XcodeGen: $("$BIN_DIR/xcodegen" --version 2>&1 | head -1)"
+  export PATH="$BIN_DIR:$PATH"
+else
+  install_from_release "$XCODEGEN_VERSION"
+  export PATH="$BIN_DIR:$PATH"
+  echo "Installed XcodeGen: $(xcodegen --version 2>&1 | head -1)"
+fi
+
+command -v xcodegen >/dev/null 2>&1 || {
+  echo "xcodegen is not on PATH after installation." >&2
+  exit 1
+}
 
 echo ""
-echo "macOS:    $(sw_vers -productVersion)  ($(uname -m))"
-echo "Xcode:    $(xcodebuild -version 2>/dev/null | head -1 || echo 'NOT INSTALLED')"
+echo "macOS:  $(sw_vers -productVersion)  ($(uname -m))"
+echo "Xcode:  $(xcodebuild -version 2>/dev/null | head -1 || echo 'NOT INSTALLED — iOS build will not work')"
 
 # Remove any stale project first so nothing survives from a previous run.
 rm -rf CameraApp.xcodeproj
