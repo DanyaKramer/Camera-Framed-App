@@ -122,11 +122,14 @@ final class SubjectDetector {
                 // Blend objectness into attention: it is sharper on actual objects.
                 // Written out as an indexed loop with explicit types — the `zip().map()`
                 // form made the type checker run for an unreasonable amount of time.
-                if let objectnessMap, let saliency, !saliency.isEmpty {
-                    let count = min(saliency.count, objectnessMap.count)
+                // Bind to a differently named local: `if let saliency` would shadow the
+                // outer `var saliency` with an immutable binding, and the
+                // assignment below would not compile.
+                if let objectnessMap, let attentionMap = saliency, !attentionMap.isEmpty {
+                    let count = min(attentionMap.count, objectnessMap.count)
                     var blended = [Float](repeating: 0, count: count)
                     for i in 0..<count {
-                        let a: Double = Double(saliency[i]) * 0.6
+                        let a: Double = Double(attentionMap[i]) * 0.6
                         let b: Double = Double(objectnessMap[i]) * 0.4
                         let mixed: Double = min(1.0, a + b)
                         blended[i] = Float(mixed)
