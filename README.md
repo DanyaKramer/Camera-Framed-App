@@ -32,18 +32,35 @@ open CameraApp.xcodeproj
 `Info.plist` генерируется автоматически (`GENERATE_INFOPLIST_FILE`), строки
 использования камеры и фотоальбома берутся из `Resources/Info/UsageDescriptions.json`.
 
-### Проект генерируется скриптом
+### Проект генерируется из `project.yml`
 
-Файл `project.pbxproj` **не редактируется руками**. После добавления или удаления
-`.swift` файла запусти:
+**`CameraApp.xcodeproj` не хранится в репозитории.** Он целиком строится из
+`project.yml` инструментом XcodeGen, который читает реальную файловую систему.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File Tools/generate_project.ps1
+```bash
+./Tools/bootstrap.sh
 ```
 
-Скрипт пересобирает проект из дерева исходников. Схема `CameraApp` — shared,
-лежит в `CameraApp.xcodeproj/xcshareddata/xcschemes/`, поэтому `xcodebuild -scheme`
-работает без ручных действий.
+Скрипт поставит XcodeGen через Homebrew, удалит старый проект, сгенерирует новый и
+откроет его в Xcode.
+
+Почему так: предыдущая версия генерировала `project.pbxproj` вручную, и формат
+оказался слишком хрупким — дважды «прошли» мои собственные проверки, а файл всё
+равно не открывался. Инструмент, который читает каталог с диска, просто не может
+ошибиться в путях.
+
+Что меняется на практике:
+
+- **Xcode не покажет «Recovered References»** — такого класса ошибок больше нет.
+- В навигаторе Xcode появится **настоящее дерево папок** (`App/`, `Core/Camera/`,
+  `Framing/`, `UI/`), а не плоский список.
+- После добавления нового `.swift` файла достаточно повторить `bootstrap.sh`
+  (или нажать Run в Xcode — XcodeGen следит за изменениями сам, если запущен).
+- `Tools/generate_project.ps1` и `Resources/Info/UsageDescriptions.json` удалены:
+  строки использования камеры и фотоальбома теперь живут прямо в `project.yml`,
+  и источник истины ровно один.
+
+Требуется Homebrew: <https://brew.sh>
 
 ---
 

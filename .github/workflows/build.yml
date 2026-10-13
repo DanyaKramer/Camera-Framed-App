@@ -1,8 +1,8 @@
 name: Build
 
-# The point of this pipeline is to find out whether the code compiles *before*
-# you get to the Mac. GitHub's macOS runners are always on the newest Xcode, so
-# this catches compiler errors even if your own Mac can only run Xcode 15.
+# The Xcode project is generated from project.yml by XcodeGen, so CI does the same.
+# Running the generator here means a stale project can never reach a machine that
+# has no way to regenerate it.
 
 on:
   push:
@@ -28,24 +28,11 @@ jobs:
           xcodebuild -version
           swift --version
 
-      # The checked-in project file is generated. A stale or wrong file reference
-      # makes Xcode show every file as "recovered reference" and the build fail
-      # with "Build input file cannot be found" — expensive to diagnose remotely,
-      # so it is worth catching here. The generator also verifies that every path
-      # it emits resolves on disk, and throws if not.
-      - name: Verify project file matches sources
-        run: |
-          if ! command -v pwsh >/dev/null 2>&1; then
-            echo "pwsh not available on this runner — skipping project check."
-            exit 0
-          fi
-          pwsh -File Tools/generate_project.ps1
-          if ! git diff --quiet -- CameraApp.xcodeproj/project.pbxproj; then
-            echo "::error::project.pbxproj is out of sync with the source tree. Run Tools/generate_project.ps1 and commit the result."
-            git --no-pager diff -- CameraApp.xcodeproj/project.pbxproj | head -60
-            exit 1
-          fi
-          echo "project.pbxproj is in sync."
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Compile (unsigned, generic iOS device)
         run: |
@@ -59,7 +46,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tee build.log
+            build 2>&1 | tee build.log
+          # Surface compiler errors compactly for quick triage.
+          grep -E "error:" build.log | sort -u | head -60 || true
 
       - name: Upload build log
         if: always()
@@ -70,6 +59,7 @@ jobs:
           retention-days: 14
 
       - name: Upload app bundle
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CameraApp-unsigned
@@ -77,8 +67,8 @@ jobs:
           retention-days: 14
 
   # Optional: push straight to TestFlight so the app lands on the phone without
-  # touching the Mac. Requires an Apple Developer account ($99/yr) and these secrets:
-  #   APPLE_ID, TEAM_ID, APP_SPECIFIC_PASSWORD, APPLE_ISSUER_ID, APPLE_API_KEY_ID
+  # touching the Mac. Requires an Apple Developer account ($99/yr) and secrets:
+  #   APPLE_ISSUER_ID, APPLE_API_KEY_ID, APPLE_API_PRIVATE_KEY
   testflight:
     name: Upload to TestFlight
     runs-on: macos-latest
