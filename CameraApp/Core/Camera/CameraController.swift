@@ -625,7 +625,7 @@ final class CameraController {
                     // `options:` has no default value in Swift, pass nil explicitly.
                     request.addResource(with: .photo, data: data, options: nil)
                 }
-            } completionHandler { _, _ in
+            }; completionHandler { _, _ in
                 cont.resume()
             }
         }
