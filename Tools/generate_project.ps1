@@ -76,15 +76,11 @@ $buildFileLines = [System.Collections.ArrayList]::new()
 $groupChildLines = [System.Collections.ArrayList]::new()
 $sourcesLines   = [System.Collections.ArrayList]::new()
 $resourcesLines = [System.Collections.ArrayList]::new()
-$groupIds       = [System.Collections.ArrayList]::new()
 
 foreach ($e in $entries) {
     $fileId   = Get-Id ("F:" + $e.Rel)
     $buildId  = Get-Id ("B:" + $e.Rel)
-    $groupId  = Get-Id ("G:" + $e.Rel)
     $name     = [System.IO.Path]::GetFileName($e.Rel)
-
-    [void]$groupIds.Add($groupId)
 
     # The file reference path must be the path RELATIVE TO THE GROUP ROOT
     # (i.e. "App/CameraApp.swift"), not just the leaf name. Using only the leaf
@@ -100,7 +96,10 @@ foreach ($e in $entries) {
         [void]$resourcesLines.Add(($T + $T + $buildId + ' /* ' + $name + ' in Resources */,'))
     }
 
-    [void]$groupChildLines.Add(($T + $T + $groupId + ' /* ' + $e.Rel + ' */,'))
+    # Group children must point AT THE FILE REFERENCE OBJECT. There is no separate
+    # proxy object for a flat group — referencing a different id here is what puts
+    # every file under "Recovered References".
+    [void]$groupChildLines.Add(($T + $T + $fileId + ' /* ' + $e.Rel + ' */,'))
 }
 
 # ---------------------------------------------------------------- build settings
@@ -373,24 +372,68 @@ $content = ($out -join "`n") + "`n"
 $path = Join-Path $projectDir 'project.pbxproj'
 [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 
-# Verify every generated file reference resolves to a file that actually exists.
-# A wrong `path` makes Xcode silently show "recovered reference" and fail the
-# build with "Build input file cannot be found" — expensive to debug from the
-# far side, trivial to catch here.
-$missing = @()
+# --- Verification -------------------------------------------------------------
+# A pbxproj is only useful if every identifier resolves. Two failure modes cost
+# real debugging time:
+#   1. a `path` that does not exist on disk  -> "Build input file cannot be found"
+#   2. a group child pointing at an id with no object behind it
+#      -> every file lands under "Recovered References"
+# Both are invisible to a brace-balance check, so verify them explicitly.
+
+$problems = @()
+
+# (1) every referenced path must exist
 foreach ($e in $entries) {
     $full = Join-Path $sourceRoot ($e.Rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-    if (-not (Test-Path $full)) { $missing += $e.Rel }
+    if (-not (Test-Path $full)) { $problems += "missing file on disk: $($e.Rel)" }
 }
-if ($missing.Count -gt 0) {
+
+# (2) every id listed in a `children = (...)` block must be a declared object.
+# Objects are written two ways: single-line (`= {isa = PBXFileReference; ... };`)
+# and multi-line (`= {` followed by an `isa =` line). Match both, or groups and
+# build phases silently go unchecked.
+$defined = @{}
+foreach ($m in [regex]::Matches($content, '(?m)^\t+([0-9a-f]{24})\b[^\n]*= \{')) {
+    $defined[$m.Groups[1].Value] = $true
+}
+$childBlock = [regex]::Match($content, '(?s)isa = PBXGroup;.*?children = \((.*?)\);')
+if ($childBlock.Success) {
+    foreach ($m in [regex]::Matches($childBlock.Groups[1].Value, '(?m)^\t+([0-9a-f]{24}) ')) {
+        $id = $m.Groups[1].Value
+        if (-not $defined.ContainsKey($id)) {
+            $problems += "group child references undefined object id: $id"
+        }
+    }
+}
+
+# (3) every id listed anywhere in a parenthesised list — build phases, targets,
+# configuration lists — must also resolve, not just the first group's children.
+foreach ($listMatch in [regex]::Matches($content, '(?m)^\t+(?:children|files|buildPhases|targets|buildConfigurations) = \(([^)]*)\)')) {
+    foreach ($m in [regex]::Matches($listMatch.Groups[1].Value, '([0-9a-f]{24})')) {
+        $id = $m.Groups[1].Value
+        if (-not $defined.ContainsKey($id)) {
+            $problems += "list references undefined object id: $id"
+        }
+    }
+}
+
+# (3) every build file must point at a declared file reference
+foreach ($m in [regex]::Matches($content, 'fileRef = ([0-9a-f]{24})')) {
+    $id = $m.Groups[1].Value
+    if (-not $defined.ContainsKey($id)) {
+        $problems += "build file references undefined object id: $id"
+    }
+}
+
+if ($problems.Count -gt 0) {
     Write-Host ''
-    Write-Host 'ERROR: these file references do not exist on disk:' -ForegroundColor Red
-    foreach ($m in $missing) { Write-Host ("  " + $m) -ForegroundColor Red }
-    throw 'Project file would contain broken references.'
+    Write-Host 'ERROR: the generated project file is internally inconsistent:' -ForegroundColor Red
+    foreach ($p in ($problems | Select-Object -Unique)) { Write-Host ("  " + $p) -ForegroundColor Red }
+    throw 'Refusing to leave a broken project file on disk.'
 }
 
 Write-Host ''
 Write-Host ("Wrote {0}" -f $path)
 Write-Host ('  objectVersion 56 - opens in Xcode 14, 15, 16 and 26')
 Write-Host ('  {0} sources, {1} asset catalogs' -f $swiftFiles.Count, $assetDirs.Count)
-Write-Host ('  verified: all {0} file references resolve on disk' -f $entries.Count)
+Write-Host ('  verified: {0} paths on disk, {1} object ids all resolve' -f $entries.Count, $defined.Count)
