@@ -1,0 +1,116 @@
+name: Build
+
+# The point of this pipeline is to find out whether the code compiles *before*
+# you get to the Mac. GitHub's macOS runners are always on the newest Xcode, so
+# this catches compiler errors even if your own Mac can only run Xcode 15.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # The checked-in project file is generated. If it drifts out of sync with the
+      # source tree, later builds silently miss files — so verify it.
+      - name: Verify project file is in sync with sources
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          pwsh -File Tools/generate_project.ps1
+          if ! git diff --quiet -- CameraApp.xcodeproj/project.pbxproj; then
+            echo "::warning::project.pbxproj is out of sync. Run Tools/generate_project.ps1 and commit the result."
+          fi
+
+      - name: Compile (unsigned, generic iOS device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CameraApp.xcodeproj \
+            -scheme CameraApp \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 14
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: CameraApp-unsigned
+          path: build/DerivedData/Build/Products/Debug-iphoneos/CameraApp.app
+          retention-days: 14
+
+  # Optional: push straight to TestFlight so the app lands on the phone without
+  # touching the Mac. Requires an Apple Developer account ($99/yr) and these secrets:
+  #   APPLE_ID, TEAM_ID, APP_SPECIFIC_PASSWORD, APPLE_ISSUER_ID, APPLE_API_KEY_ID
+  testflight:
+    name: Upload to TestFlight
+    runs-on: macos-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    timeout-minutes: 25
+    environment: testflight
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for signing secrets
+        id: secrets
+        run: |
+          if [ -n "${{ secrets.APPLE_ISSUER_ID }}" ] && [ -n "${{ secrets.APPLE_API_KEY_ID }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No Apple API secrets configured — skipping upload."
+          fi
+
+      - name: Build archive
+        if: steps.secrets.outputs.configured == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CameraApp.xcodeproj \
+            -scheme CameraApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/CameraApp.xcarchive \
+            archive
+
+      - name: Upload to App Store Connect
+        if: steps.secrets.outputs.configured == 'true'
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+          issuer-id: ${{ secrets.APPLE_ISSUER_ID }}
+          api-private-key: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          skip-wait-processing-for-processing: true
+          skip-remove-latest-successful-build: true
+          app-path: build/CameraApp.xcarchive
