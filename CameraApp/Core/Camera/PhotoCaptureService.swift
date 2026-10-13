@@ -113,7 +113,9 @@ final class PhotoCaptureService: NSObject {
         }
 
         settings.photoQualityPrioritization = .quality
-        settings.maxPhotoDimensions = output.maxPhotoDimensions
+
+        // `maxPhotoDimensions` is deliberately not set: leaving it alone already
+        // means "largest size the device supports", which is what we want.
 
         if let previewType = settings.availablePreviewPhotoPixelFormatTypes.first {
             settings.previewPhotoFormat = [

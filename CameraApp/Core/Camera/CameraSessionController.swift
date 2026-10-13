@@ -103,10 +103,11 @@ final class CameraSessionController: NSObject, @unchecked Sendable {
 
         session.sessionPreset = .photo
 
-        // Replace any existing video input. `mediaType` lives on
-        // AVCaptureDeviceInput, not on the AVCaptureInput base class.
+        // Replace any existing video input. Neither AVCaptureInput nor
+        // AVCaptureDeviceInput exposes `mediaType` — the media type lives on the
+        // input's ports, one per data stream the input provides.
         for input in session.inputs {
-            if let deviceInput = input as? AVCaptureDeviceInput, deviceInput.mediaType == .video {
+            if input.ports.contains(where: { $0.mediaType == .video }) {
                 session.removeInput(input)
             }
         }
