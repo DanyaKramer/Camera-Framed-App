@@ -47,7 +47,7 @@ final class SubjectDetector {
             for face in faces {
                 // Vision uses a bottom-left origin; the engine works top-left.
                 let box = Self.flip(face.boundingBox)
-                guard let existing = subject.bounds {
+                if let existing = subject.bounds {
                     subject.bounds = existing.union(box)
                 } else {
                     subject.bounds = box
@@ -67,9 +67,8 @@ final class SubjectDetector {
                     if let nose = landmarks.nose, nose.pointCount > 0 {
                         let nosePoint = nose.normalizedPoints[0]
                         let eyeMidX = (leftEye.normalizedPoints[0].x + rightEye.normalizedPoints[0].x) / 2
-                        let eyeMidYValue = eyeY
                         facingVectors.append(
-                            CGVector(dx: nosePoint.x - eyeMidX, dy: nosePoint.y - eyeMidYValue)
+                            CGVector(dx: nosePoint.x - eyeMidX, dy: nosePoint.y - eyeY)
                         )
                     }
                 }
@@ -98,34 +97,41 @@ final class SubjectDetector {
             let handler = VNImageRequestHandler(cgImage: input.cgImage, orientation: .up, options: [:])
             try handler.perform(requests)
 
-            if let observation = attention.results?.first as? VNImageBasedSaliencyImageObservation,
-               let buffer = observation.pixelBuffer {
+            // The saliency observation class is VNSaliencyImageObservation (there is no
+            // VNImageBasedSaliencyImageObservation). `pixelBuffer` is non-optional.
+            if let observation = attention.results?.first as? VNSaliencyImageObservation {
+                let buffer = observation.pixelBuffer
                 saliency = Self.normalize(buffer: buffer, width: input.width, height: input.height)
             }
-            if let observation = objectness.results?.first as? VNImageBasedSaliencyImageObservation,
-               let buffer = observation.pixelBuffer {
+            if let observation = objectness.results?.first as? VNSaliencyImageObservation {
+                let buffer = observation.pixelBuffer
                 let objectnessMap = Self.normalize(buffer: buffer, width: input.width, height: input.height)
                 salientObjects = observation.salientObjects ?? []
                 if subject.isEmpty, let box = Self.union(of: salientObjects) {
+                    let flipped = Self.flip(box)
                     subject = SubjectInfo(
                         kind: .object,
-                        bounds: Self.flip(box),
-                        centroid: nil,
+                        bounds: flipped,
+                        centroid: CGPoint(x: flipped.midX, y: flipped.midY),
                         eyeLineY: nil,
                         facing: nil,
-                        faceCount: 0,
+                        faceCount: subject.faceCount,
                         confidence: 0.5
                     )
-                    if let b = subject.bounds {
-                        subject.centroid = CGPoint(x: b.midX, y: b.midY)
-                    }
                 }
                 // Blend objectness into attention: it is sharper on actual objects.
-                if let objectnessMap, let saliency {
-                    mask = nil
-                    saliency = zip(saliency, objectnessMap).map { a, b in
-                        Float(min(1.0, Double(a) * 0.6 + Double(b) * 0.4))
+                // Written out as an indexed loop with explicit types — the `zip().map()`
+                // form made the type checker run for an unreasonable amount of time.
+                if let objectnessMap, let saliency, !saliency.isEmpty {
+                    let count = min(saliency.count, objectnessMap.count)
+                    var blended = [Float](repeating: 0, count: count)
+                    for i in 0..<count {
+                        let a: Double = Double(saliency[i]) * 0.6
+                        let b: Double = Double(objectnessMap[i]) * 0.4
+                        let mixed: Double = min(1.0, a + b)
+                        blended[i] = Float(mixed)
                     }
+                    saliency = blended
                 }
             }
         } catch {
@@ -140,21 +146,31 @@ final class SubjectDetector {
             do {
                 let handler = VNImageRequestHandler(cgImage: input.cgImage, orientation: .up, options: [:])
                 try handler.perform([segmentation])
-                if let observation = segmentation.results?.first as? VNPixelBufferObservation,
-                   let buffer = observation.pixelBuffer {
-                    let personMap = Self.normalize(buffer: buffer, width: input.width, height: input.height)
-                    mask = personMap
-                    if let box = Self.boundingBox(ofValues: personMap, threshold: 0.35, width: input.width, height: input.height) {
-                        subject = SubjectInfo(
-                            kind: .person,
-                            bounds: box,
-                            centroid: nil,
-                            eyeLineY: nil,
-                            facing: nil,
-                            faceCount: subject.faceCount,
-                            confidence: 0.85
-                        )
-                        subject.centroid = CGPoint(x: box.midX, y: box.midY)
+                if let observation = segmentation.results?.first as? VNPixelBufferObservation {
+                    // `pixelBuffer` is non-optional on VNPixelBufferObservation.
+                    let buffer = observation.pixelBuffer
+                    if let personMap = Self.normalize(
+                        buffer: buffer,
+                        width: input.width,
+                        height: input.height
+                    ) {
+                        mask = personMap
+                        if let box = Self.boundingBox(
+                            ofValues: personMap,
+                            threshold: 0.35,
+                            width: input.width,
+                            height: input.height
+                        ) {
+                            subject = SubjectInfo(
+                                kind: .person,
+                                bounds: box,
+                                centroid: CGPoint(x: box.midX, y: box.midY),
+                                eyeLineY: nil,
+                                facing: nil,
+                                faceCount: subject.faceCount,
+                                confidence: 0.85
+                            )
+                        }
                     }
                 }
             } catch {
